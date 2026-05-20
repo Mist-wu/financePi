@@ -25,8 +25,8 @@
    │ 行情工具：Binance K线 / 资金费率 / 深度     │
    │ 量化工具：趋势 / 波动率 / 筛币 / 回测       │
    │ 账户工具：持仓 / 订单 / 余额 / 盈亏         │
-   │ 风控工具：仓位 / 杠杆 / 止损 / 熔断       │
-   │ 执行工具：下单 / 撤单 / 止盈止损          │
+   │ 风控工具：仓位 / 杠杆 / 止损 / 熔断         │
+   │ 执行工具：下单 / 撤单 / 止盈止损            │
    └─────────────────────────────────────────┘
                      │
                      ▼
@@ -303,14 +303,6 @@ Python 工具返回 Top N：
 
 ────────────────────────────────────────────────────────────────────────────────
 
-我觉得你的目标可以这样表述
-
-不是：
-
-│ AI 辅助量化程序交易
-
-而是：
-
 │ Pi 驱动的自主交易 Agent，外接新闻、行情、量化和执行工具，由程序风控约束其交易行为。
 
 这个定位是成立的。
@@ -328,23 +320,23 @@ Python 工具返回 Top N：
 ### Docs
 
 - DefiLlama API docs/api-sources.md
-- duckduckgo_search https://raw.githubusercontent.com/deedy5/ddgs/refs/heads/main/README.md
-- Binance https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
-- Fred https://raw.githubusercontent.com/mortada/fredapi/refs/heads/master/README.md
-- Tavily AI docs https://docs.tavily.com/llms.txt
-- Newsapi https://newsapi.org/docs
+- duckduckgo_search [https://raw.githubusercontent.com/deedy5/ddgs/refs/heads/main/README.md](https://raw.githubusercontent.com/deedy5/ddgs/refs/heads/main/README.md)
+- Binance [https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info](https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info)
+- Fred [https://raw.githubusercontent.com/mortada/fredapi/refs/heads/master/README.md](https://raw.githubusercontent.com/mortada/fredapi/refs/heads/master/README.md)
+- Tavily AI docs [https://docs.tavily.com/llms.txt](https://docs.tavily.com/llms.txt)
+- Newsapi [https://newsapi.org/docs](https://newsapi.org/docs)
 
 ### RSS
 
 #### 币圈实时新闻
 
-- CoinDesk RSS: https://www.coindesk.com/arc/outboundfeeds/rss/
-- CoinTelegraph RSS: https://cointelegraph.com/rss
+- CoinDesk RSS: [https://www.coindesk.com/arc/outboundfeeds/rss/](https://www.coindesk.com/arc/outboundfeeds/rss/)
+- CoinTelegraph RSS: [https://cointelegraph.com/rss](https://cointelegraph.com/rss)
 
 #### 权威宏观与全球时事
 
-- 华尔街日报 (WSJ) 核心新闻: https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml
-- FT 中文网: http://www.ftchinese.com/rss/feed
+- 华尔街日报 (WSJ) 核心新闻: [https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml](https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml)
+- FT 中文网: [http://www.ftchinese.com/rss/feed](http://www.ftchinese.com/rss/feed)
 
 ## 测试
 
