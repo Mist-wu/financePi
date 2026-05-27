@@ -26,6 +26,12 @@ venv/
 ENV/
 env/
 
+# Cache
+.cache/
+
+# Runtime state
+state/
+
 # Logs
 logs
 *.log
