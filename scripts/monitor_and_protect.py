@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""
-监控限价单成交状态，成交后自动设置止损止盈
+"""Legacy read-only order monitor.
+
+This script reports configured historical orders only. It does not create TP/SL
+orders; live protection belongs to pi_trading_supervisor.py.
 """
 
 import base64
@@ -96,7 +98,7 @@ ORDERS = {
 }
 
 print("=" * 60)
-print("🔍 监控限价单成交状态")
+print("Legacy read-only order monitor (does not place TP/SL)")
 print("=" * 60)
 print()
 print("等待成交中...")

@@ -7,6 +7,7 @@
 """
 
 import base64
+import fcntl
 import json
 import math
 import os
@@ -20,6 +21,7 @@ from cryptography.hazmat.primitives import serialization
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_PATH = os.path.join(ROOT, "logs", f"autopilot_8h_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
+EXECUTION_LOCK_PATH = os.path.join(ROOT, "state", "live_execution.lock")
 
 
 def load_dotenv(path: str) -> dict[str, str]:
@@ -78,6 +80,23 @@ def log(event, **data):
     print(json.dumps(row, ensure_ascii=False), flush=True)
     with open(LOG_PATH, "a") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def acquire_live_lock():
+    os.makedirs(os.path.dirname(EXECUTION_LOCK_PATH), exist_ok=True)
+    handle = open(EXECUTION_LOCK_PATH, "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as e:
+        handle.seek(0)
+        owner = handle.read().strip() or "unknown process"
+        handle.close()
+        raise RuntimeError(f"Another live execution process is active: {owner}") from e
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()} script=autopilot_8h started={datetime.now().isoformat(timespec='seconds')}\n")
+    handle.flush()
+    return handle
 
 
 def sign(query: str) -> str:
@@ -335,6 +354,7 @@ def manage_position(symbol, start_time, filters):
 
 
 def main():
+    live_lock = acquire_live_lock()
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     filters = get_exchange_filters()
     start_ts = time.time()
