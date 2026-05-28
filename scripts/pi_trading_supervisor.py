@@ -1218,6 +1218,9 @@ class TradingSupervisor:
                 "ai_is_primary_decision_maker": True,
                 "execution_requires_python_risk_gate": True,
                 "must_have_stop_loss": True,
+                "must_have_disaster_stop": True,
+                "take_profit_required_on_entry": False,
+                "dynamic_position_management": True,
             },
         }
         return snapshot
@@ -1235,15 +1238,16 @@ class TradingSupervisor:
 决策要求：
 1. 只输出一个 JSON 对象，不要 Markdown，不要解释。
 2. 你是主决策者：市场持续波动时，必须主动寻找至少一个最优交易方向；除非全市场明显无边际优势，否则不要 hold；优先给出可用 post-only 限价挂单方案。
-3. 若已有持仓，主动判断：close、reduce、tighten_stop、move_stop_to_breakeven、hold，或是否允许再开第二个不冲突仓位。
-4. 开新仓需要给出明确 entry、stop_loss、take_profit、invalid_if；confidence 由你自主评估，Python 不以置信度替你否决提案。
+3. 若已有持仓，主动判断：close、reduce、tighten_stop、move_stop_to_breakeven、hold，或用同方向 open_long/open_short 小额加仓；也可寻找第二个不冲突仓位。
+4. 开新仓需要给出明确 entry、disaster_stop/stop_loss、invalid_if；take_profit 可选，正常止盈/止损/加仓/继续持有由你在后续轮次动态管理。
 5. 可以基于技术面、资金费率、新闻催化、Binance公告、FRED宏观数据、BTC/ETH 联动和盘口波动主动做多或做空。
 6. 每轮必须横向比较候选列表、全市场涨跌幅/成交量/资金费率榜、订单簿/成交流/OI/多空比、新闻/情绪/事件/宏观；如果 hold，需要说明为什么最佳替代币也不值得做。
 7. Binance 下单名义金额必须留余量，notional_usdt 不要低于 6.0，避免数量按 stepSize 取整后低于 5U。
 8. 默认执行会先用 post-only maker 限价单挂 35 秒，未成交就取消，不追价；所以提案必须给出 entry_price 或 entry_zone，表达你真正想等的入场位置。
 9. 当前系统过去亏损多来自过度短线和手续费；除非 thesis 明确失效，不要只因 1m 噪音要求 close。
-10. Python 风控已切到 AI-forward 模式：只拦截无止损、保证金不足、极端过量仓位等硬错误；你应更主动地把可交易优势转成提案。
+10. Python 风控已切到 AI-forward 模式：只拦截无灾难止损、保证金不足、极端过量仓位等硬错误；你应更主动地把可交易优势转成提案。
 11. 新闻不要只看标题：结合 news.text、Binance 公告、FRED 宏观、项目事件判断新闻是否新增、是否已被价格兑现。
+12. 不要把开仓时的 take_profit 当成固定出场承诺；除非你明确想放交易所止盈单，否则留 null，并在后续循环根据实时数据主动 close/reduce/tighten_stop/hold。
 
 可选 decision：
 - hold
@@ -1268,6 +1272,7 @@ JSON 格式：
     "notional_usdt": null,
     "leverage": null,
     "stop_loss": null,
+    "disaster_stop": null,
     "take_profit": null,
     "reduce_fraction": null,
     "new_stop": null,
@@ -1384,6 +1389,9 @@ JSON 格式：
             return baseline
         return max(baseline, requested) if amt > 0 else min(baseline, requested)
 
+    def proposal_disaster_stop(self, proposal: dict[str, Any]) -> float:
+        return safe_float(proposal.get("disaster_stop")) or safe_float(proposal.get("stop_loss"))
+
     def risk_check(self, decision: dict[str, Any], snapshot: dict[str, Any]) -> tuple[bool, str]:
         allowed = {"hold", "close", "reduce", "tighten_stop", "move_stop_to_breakeven", "open_long", "open_short"}
         d = decision.get("decision")
@@ -1428,25 +1436,48 @@ JSON 格式：
         # Opening new position
         if not health.get("all_open_orders", False) or not health.get("all_open_algo_orders", False):
             return False, "open order state unavailable"
-        if pos:
-            return False, "adding to existing symbol position is unsupported"
-        symbol_pending = [
-            order for order in snapshot.get("all_open_orders", []) + snapshot.get("all_open_algo_orders", [])
+        existing_amt = safe_float(pos.get("positionAmt")) if pos else 0.0
+        is_add = pos is not None
+        if is_add and ((d == "open_long" and existing_amt <= 0) or (d == "open_short" and existing_amt >= 0)):
+            return False, "existing opposite position"
+        symbol_open_orders = [
+            order for order in snapshot.get("all_open_orders", [])
             if isinstance(order, dict) and order.get("symbol") == symbol
         ]
-        if symbol_pending:
-            return False, "symbol already has open orders"
-        if len(positions) >= self.risk.max_positions:
+        symbol_algo_orders = [
+            order for order in snapshot.get("all_open_algo_orders", [])
+            if isinstance(order, dict) and order.get("symbol") == symbol
+        ]
+        active_entry_algos = [
+            order for order in symbol_algo_orders
+            if order.get("orderType") not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"}
+        ]
+        if symbol_open_orders or active_entry_algos:
+            return False, "symbol already has open entry orders"
+        if not is_add and symbol_algo_orders:
+            return False, "symbol already has protection orders"
+        if not is_add and len(positions) >= self.risk.max_positions:
             return False, "max positions reached"
         day_pnl = self.recent_account_pnl(snapshot)
         if self.risk.enforce_daily_loss_limit and day_pnl < -wallet * self.risk.max_daily_loss_frac:
             return False, f"daily loss limit hit {day_pnl:.4f}"
         notional = safe_float(proposal.get("notional_usdt"))
         leverage = int(safe_float(proposal.get("leverage")))
-        stop_loss = safe_float(proposal.get("stop_loss"))
+        stop_loss = self.proposal_disaster_stop(proposal)
         take_profit = safe_float(proposal.get("take_profit"))
-        if notional <= 0 or leverage <= 0 or stop_loss <= 0 or take_profit <= 0:
-            return False, "open missing notional/leverage/stop/tp"
+        if notional <= 0 or leverage <= 0 or stop_loss <= 0:
+            return False, "open missing notional/leverage/disaster_stop"
+        current_stops = [
+            safe_float(order.get("triggerPrice"))
+            for order in symbol_algo_orders
+            if order.get("orderType") == "STOP_MARKET" and safe_float(order.get("triggerPrice")) > 0
+        ]
+        if is_add and not current_stops:
+            return False, "add missing existing protection stop"
+        if is_add and existing_amt > 0 and stop_loss < max(current_stops):
+            return False, "add disaster_stop would loosen existing stop"
+        if is_add and existing_amt < 0 and stop_loss > min(current_stops):
+            return False, "add disaster_stop would loosen existing stop"
         if not str(proposal.get("invalid_if") or "").strip():
             return False, "open missing invalid_if"
         if not str(proposal.get("entry_condition") or "").strip():
@@ -1463,12 +1494,16 @@ JSON 格式：
         if price <= 0:
             return False, "open missing entry_price/entry_zone"
         if d == "open_long":
-            if not (stop_loss < price < take_profit):
-                return False, "bad long stop/tp geometry"
+            if not stop_loss < price:
+                return False, "bad long disaster_stop geometry"
+            if take_profit > 0 and not price < take_profit:
+                return False, "bad long take_profit geometry"
             risk_usdt = (price - stop_loss) / price * notional
         else:
-            if not (take_profit < price < stop_loss):
-                return False, "bad short stop/tp geometry"
+            if not price < stop_loss:
+                return False, "bad short disaster_stop geometry"
+            if take_profit > 0 and not take_profit < price:
+                return False, "bad short take_profit geometry"
             risk_usdt = (stop_loss - price) / price * notional
         if risk_usdt > wallet * self.risk.max_single_loss_frac:
             return False, f"risk too high {risk_usdt:.4f}"
@@ -1566,7 +1601,24 @@ JSON 格式：
                 return out
             stop_side = "SELL" if d == "open_long" else "BUY"
             try:
-                protection = self.binance.place_protection_orders(symbol, stop_side, safe_float(proposal.get("stop_loss")), safe_float(proposal.get("take_profit")))
+                existing_position = next((p for p in snapshot.get("account", {}).get("positions", []) if p.get("symbol") == symbol), None)
+                protection_kwargs = {}
+                if existing_position:
+                    refreshed_account = require_api_result(self.binance.account_state(), "refresh account after add")
+                    refreshed_position = next((p for p in refreshed_account.get("positions", []) if p.get("symbol") == symbol), None)
+                    if not refreshed_position:
+                        raise RuntimeError("position missing after add fill")
+                    protection_kwargs = {
+                        "position_qty": abs(safe_float(refreshed_position.get("positionAmt"))),
+                        "existing_orders": self.binance.open_algo_orders(symbol),
+                    }
+                protection = self.binance.place_protection_orders(
+                    symbol,
+                    stop_side,
+                    self.proposal_disaster_stop(proposal),
+                    safe_float(proposal.get("take_profit")),
+                    **protection_kwargs,
+                )
             except Exception as e:
                 emergency_close = self.binance.close_position_market(symbol, executed_qty if d == "open_long" else -executed_qty)
                 out = {
