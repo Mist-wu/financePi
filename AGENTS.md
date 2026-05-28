@@ -22,7 +22,7 @@ Python Supervisor
   ├── 构造结构化 snapshot
   ├── 调用 Pi RPC 获取 JSON 决策
   ├── 执行 Python 风控闸门
-  ├── 执行 Binance 受控下单 / 撤单 / 止盈止损
+  ├── 执行 Binance 受控下单 / 撤单 / 灾难止损 / 动态仓位管理
   └── 写入 logs 与 state
 
 Pi RPC
@@ -53,7 +53,7 @@ Pi 输出结构化交易提案
   ↓
 Python 风控检查
   ↓
-通过后执行 post-only maker 入场 / 止损 / 止盈
+通过后执行 post-only maker 入场 / 灾难止损 / 动态仓位管理
   ↓
 记录日志
   ↓
@@ -75,7 +75,8 @@ Pi 复盘
 - 不要让 AI 获得未受限的交易所权限。
 - 风控必须在 Python 层强制执行，不能只靠提示词。
 - live 下单必须记录日志。
-- 开仓必须有 stop_loss、take_profit、invalid_if。
+- 开仓必须有 disaster_stop 或 stop_loss，以及 invalid_if；take_profit 可选，由 Pi 后续动态管理。
+- 同方向加仓必须重新经过 Python 风控，不能放松旧止损，并按刷新后的总仓位维护灾难止损。
 - 保护单更新必须先确认新止损有效，不能先撤掉最后一个有效止损。
 - 账户/挂单读取不可信时不能清理保护单或执行新开仓。
 - 只能有一个 live 执行进程持有 `state/live_execution.lock`。
