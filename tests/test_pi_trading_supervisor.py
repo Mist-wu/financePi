@@ -83,6 +83,16 @@ class TestProtectionReplacement(unittest.TestCase):
         self.assertIn(("stop", "ETHUSDT", "SELL", 99.0), client.calls)
         self.assertIn(("tp", "ETHUSDT", "SELL", 103.0), client.calls)
 
+    def test_initial_protection_can_skip_take_profit(self):
+        client = ProtectionClient()
+        client.open_algo_orders = mock.Mock(return_value=[])
+
+        result = supervisor.BinanceClient.place_protection_orders(client, "ETHUSDT", "SELL", 99.0, 0.0)
+
+        self.assertEqual(result["stop"]["algoId"], 30)
+        self.assertIsNone(result["take_profit"])
+        self.assertNotIn(("tp", "ETHUSDT", "SELL", 0.0), client.calls)
+
 
 class TestGuardAndRisk(unittest.TestCase):
     def make_supervisor(self):
@@ -137,6 +147,114 @@ class TestGuardAndRisk(unittest.TestCase):
         }
 
         self.assertEqual(sup.risk_check(decision, snapshot), (True, "open ok"))
+
+    def test_open_accepts_disaster_stop_without_take_profit(self):
+        sup = self.make_supervisor()
+        sup.binance = mock.Mock(filters={"ETHUSDT": {"minNotional": 5.0}})
+        decision = {
+            "decision": "open_long",
+            "symbol": "ETHUSDT",
+            "proposal": {
+                "entry_price": 100.0,
+                "entry_condition": "maker entry",
+                "notional_usdt": 6.0,
+                "leverage": 2,
+                "disaster_stop": 97.5,
+                "take_profit": None,
+                "invalid_if": "structure breaks",
+            },
+        }
+        snapshot = {
+            "account": {"raw_ok": True, "wallet": 100.0, "available": 100.0, "positions": []},
+            "positions": [],
+            "data_health": {"account": True, "all_open_orders": True, "all_open_algo_orders": True},
+            "all_open_orders": [],
+            "all_open_algo_orders": [],
+            "recent_income": [],
+        }
+
+        self.assertEqual(sup.risk_check(decision, snapshot), (True, "open ok"))
+
+    def test_same_direction_add_can_reuse_existing_protection_orders(self):
+        sup = self.make_supervisor()
+        sup.binance = mock.Mock(filters={"ETHUSDT": {"minNotional": 5.0}})
+        position = {"symbol": "ETHUSDT", "positionAmt": "0.1", "entryPrice": "99.0", "markPrice": "101.0"}
+        decision = {
+            "decision": "open_long",
+            "symbol": "ETHUSDT",
+            "proposal": {
+                "entry_price": 100.0,
+                "entry_condition": "trend add",
+                "notional_usdt": 6.0,
+                "leverage": 2,
+                "disaster_stop": 97.5,
+                "invalid_if": "trend breaks",
+            },
+        }
+        snapshot = {
+            "account": {"raw_ok": True, "wallet": 100.0, "available": 100.0, "positions": [position]},
+            "positions": [position],
+            "data_health": {"account": True, "all_open_orders": True, "all_open_algo_orders": True},
+            "all_open_orders": [],
+            "all_open_algo_orders": [{"symbol": "ETHUSDT", "orderType": "STOP_MARKET", "algoId": 8, "triggerPrice": "97.0"}],
+            "recent_income": [],
+        }
+
+        self.assertEqual(sup.risk_check(decision, snapshot), (True, "open ok"))
+
+    def test_add_rejects_opposite_position(self):
+        sup = self.make_supervisor()
+        sup.binance = mock.Mock(filters={"ETHUSDT": {"minNotional": 5.0}})
+        position = {"symbol": "ETHUSDT", "positionAmt": "-0.1", "entryPrice": "101.0", "markPrice": "100.0"}
+        decision = {
+            "decision": "open_long",
+            "symbol": "ETHUSDT",
+            "proposal": {
+                "entry_price": 100.0,
+                "entry_condition": "trend add",
+                "notional_usdt": 6.0,
+                "leverage": 2,
+                "disaster_stop": 97.5,
+                "invalid_if": "trend breaks",
+            },
+        }
+        snapshot = {
+            "account": {"raw_ok": True, "wallet": 100.0, "available": 100.0, "positions": [position]},
+            "positions": [position],
+            "data_health": {"account": True, "all_open_orders": True, "all_open_algo_orders": True},
+            "all_open_orders": [],
+            "all_open_algo_orders": [{"symbol": "ETHUSDT", "orderType": "STOP_MARKET", "algoId": 8, "triggerPrice": "97.0"}],
+            "recent_income": [],
+        }
+
+        self.assertEqual(sup.risk_check(decision, snapshot)[1], "existing opposite position")
+
+    def test_add_cannot_loosen_existing_stop(self):
+        sup = self.make_supervisor()
+        sup.binance = mock.Mock(filters={"ETHUSDT": {"minNotional": 5.0}})
+        position = {"symbol": "ETHUSDT", "positionAmt": "0.1", "entryPrice": "99.0", "markPrice": "101.0"}
+        decision = {
+            "decision": "open_long",
+            "symbol": "ETHUSDT",
+            "proposal": {
+                "entry_price": 100.0,
+                "entry_condition": "trend add",
+                "notional_usdt": 6.0,
+                "leverage": 2,
+                "disaster_stop": 96.5,
+                "invalid_if": "trend breaks",
+            },
+        }
+        snapshot = {
+            "account": {"raw_ok": True, "wallet": 100.0, "available": 100.0, "positions": [position]},
+            "positions": [position],
+            "data_health": {"account": True, "all_open_orders": True, "all_open_algo_orders": True},
+            "all_open_orders": [],
+            "all_open_algo_orders": [{"symbol": "ETHUSDT", "orderType": "STOP_MARKET", "algoId": 8, "triggerPrice": "97.0"}],
+            "recent_income": [],
+        }
+
+        self.assertEqual(sup.risk_check(decision, snapshot)[1], "add disaster_stop would loosen existing stop")
 
     def test_open_still_requires_explicit_entry(self):
         sup = self.make_supervisor()
@@ -233,6 +351,50 @@ class TestOrderExecution(unittest.TestCase):
             61.72,
             62.75,
             position_qty=0.11,
+            existing_orders=existing,
+        )
+
+    def test_add_refreshes_total_position_before_replacing_stop(self):
+        sup = supervisor.TradingSupervisor.__new__(supervisor.TradingSupervisor)
+        sup.live = True
+        sup.risk = supervisor.RiskConfig()
+        sup.log_path = Path(tempfile.mkstemp(suffix=".jsonl")[1])
+        sup.binance = mock.Mock()
+        sup.binance.filters = {"ETHUSDT": {"minNotional": 5.0}}
+        sup.binance.qty_for_notional.return_value = 0.06
+        sup.binance.set_leverage.return_value = {"leverage": 2}
+        sup.binance.place_limit_entry_with_wait.return_value = {"executedQty": "0.06"}
+        sup.binance.account_state.return_value = {
+            "positions": [{"symbol": "ETHUSDT", "positionAmt": "0.16", "entryPrice": "100.0"}]
+        }
+        existing = [{"symbol": "ETHUSDT", "orderType": "STOP_MARKET", "algoId": 8}]
+        sup.binance.open_algo_orders.return_value = existing
+        sup.binance.place_protection_orders.return_value = {"stop": {"algoId": 9}}
+        snapshot = {
+            "account": {"positions": [{"symbol": "ETHUSDT", "positionAmt": "0.1", "entryPrice": "99.0"}]},
+        }
+        decision = {
+            "decision": "open_long",
+            "symbol": "ETHUSDT",
+            "proposal": {
+                "entry_price": 100.0,
+                "entry_condition": "trend add",
+                "notional_usdt": 6.0,
+                "leverage": 2,
+                "disaster_stop": 97.5,
+                "take_profit": None,
+                "invalid_if": "trend breaks",
+            },
+        }
+
+        sup.execute(decision, snapshot, "approved")
+
+        sup.binance.place_protection_orders.assert_called_once_with(
+            "ETHUSDT",
+            "SELL",
+            97.5,
+            0.0,
+            position_qty=0.16,
             existing_orders=existing,
         )
 
