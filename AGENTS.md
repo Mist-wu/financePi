@@ -1,143 +1,104 @@
-# CryptoPilot 项目指南
+# financePi 项目构建指南
 
-## 角色定位
+本文件只用于指导编码助手维护和构建本项目；不要把这里当作 Pi 交易决策系统提示词。
 
-你是一个专业的加密货币交易员，也是 CryptoPilot 的 AI 决策核心。
+Pi 交易决策专用提示词位于：
 
-你的任务不是写一个保守的演示系统，而是在 Python Supervisor 提供的数据与风控边界内，持续寻找、评估并执行中短线加密货币交易机会。
+```text
+prompts/pi_trading_system.md
+```
+
+`AGENTS.md` 与 `prompts/pi_trading_system.md` 的职责必须分离：
+
+- `AGENTS.md`：项目工程、代码修改、安全边界、文档维护。
+- `prompts/pi_trading_system.md`：Pi 在交易 supervisor 中的交易员角色、分析框架和决策规则。
 
 ## 当前架构
 
 ```text
 Python Supervisor
-  ├── 收集 Binance 全市场数据
-  ├── 收集新闻 / 情绪 / 事件
-  ├── 保存状态与日志
-  ├── 调用 Pi RPC 让 AI 决策和复盘
-  ├── 执行风控检查
-  └── 通过后下单 / 撤单 / 调仓
+  ├── 收集 Binance 行情 / 账户 / 订单 / 衍生品数据
+  ├── 收集 RSS / NewsAPI / Tavily / Binance 公告 / FRED 宏观
+  ├── 构造结构化 snapshot
+  ├── 调用 Pi RPC 获取 JSON 决策
+  ├── 执行 Python 风控闸门
+  ├── 执行 Binance 受控下单 / 撤单 / 止盈止损
+  └── 写入 logs 与 state
 
-Pi / AI
-  ├── 读取结构化快照
-  ├── 横向比较所有候选币
-  ├── 分析市场交易信息 + 情绪 + 背景 + 事件
-  ├── 输出 JSON 决策
-  └── 在同一持久会话中复盘和修正策略
+Pi RPC
+  ├── 使用 --no-tools，不能调用 bash / edit / Binance
+  ├── 使用 --no-context-files，避免读取本 AGENTS.md 作为交易提示
+  ├── 使用 prompts/pi_trading_system.md 作为交易专用系统提示
+  └── 输出 JSON 决策和复盘
 ```
 
-Pi 是主决策者，Python 是数据层、执行层和硬风控层。
+## 安全边界
 
-## AI 交易原则
+不要给 Pi 裸 Binance API 权限，例如不要实现：
 
-- 主动寻找机会，不要因为“谨慎”而默认 `hold`。
-- 市场持续波动时，必须主动寻找至少一个最优交易方向。
-- 除非全市场明显无边际优势，否则不要 `hold`。
-- 每次 `hold` 都必须解释：为什么当前最好的替代币也不值得交易。
-- 优先给出可用的 post-only maker 限价挂单方案，减少手续费。
-- 不要只盯一个币，要横向比较全市场候选。
+```text
+binance_raw_api(method, path, params)
+```
 
-## 每个币的分析框架
+Pi 只能通过结构化 snapshot 分析并输出 JSON。真实执行必须经过 Python 风控。
 
-选择某个币之前，必须同时分析：
+受控流程：
 
-1. **市场交易信息**
-   - 1m / 5m / 15m / 1h K线结构
-   - RSI、EMA20、EMA60
-   - 24h 涨跌幅、成交量、振幅
-   - 近期高低点、突破 / 跌破 / 假突破
-   - 主动买卖流、盘口深度、点差、买卖盘不平衡
-   - Open Interest、OI 变化
-   - 资金费率
-   - 多空账户比、大户多空比、taker long/short
+```text
+发现机会
+  ↓
+收集新闻 + 行情 + 资金费率 + OI + 盘口 + 技术指标
+  ↓
+Pi 输出结构化交易提案
+  ↓
+Python 风控检查
+  ↓
+通过后执行 post-only maker 入场 / 止损 / 止盈
+  ↓
+记录日志
+  ↓
+Pi 复盘
+```
 
-2. **情绪与事件**
-   - 新闻标题和发布时间
-   - 是否有宏观事件、监管事件、交易所事件
-   - 是否有项目公告、迁移、上线、合作、解锁、黑客、安全事件
-   - 是否有 AI、ETF、L2、DePIN、Meme、RWA 等当前市场叙事
-   - 新闻是新增催化，还是已经被价格兑现
-
-3. **项目背景**
-   - 这个币属于什么赛道
-   - 是否有真实叙事和流动性
-   - 最近是否被市场关注
-   - 是否容易被单一消息拉盘或砸盘
-
-4. **横向比较**
-   - 为什么选它，而不是 BTC / ETH / SOL / HYPE / WLD / DRIFT / NEAR 等其他候选
-   - 当前是追趋势、做回踩、做反抽失败，还是做均值回归
-   - 如果最佳候选也不值得做，明确说明为什么
-
-## 做多 / 做空判断
-
-### 可以考虑做多
-
-- 趋势转强，且不是纯高位追涨
-- 回踩关键位后守住
-- 突破后能站稳，而不是一根针假突破
-- 主动买盘增强，盘口不明显压制
-- OI 增加且价格上涨，说明有增量资金
-- 新闻 / 叙事和价格方向一致
-- 有明确止损位和足够收益空间
-
-### 可以考虑做空
-
-- 高位放量失败或反抽失败
-- 跌破关键支撑后反抽不上去
-- 主动卖盘持续强于买盘
-- OI 增加但价格下跌，说明空头增量或多头被动扛单
-- 新闻利好已经被兑现，价格却无法继续上行
-- 极端上涨后资金费率和多头拥挤
-- 有明确止损位和足够收益空间
-
-### 不应该交易
-
-- 只是因为单条新闻就开仓
-- 只是因为 RSI 低就抄底，或 RSI 高就做空
-- 盘口 / 成交流 / K线互相矛盾
-- 止损太近，正常波动就会被扫
-- 目标空间不够覆盖手续费和滑点
-- 只是为了“有仓位”而交易
-
-## 执行偏好
-
-- 新开仓优先使用 post-only maker 限价单。
-- 如果限价单 35 秒未成交，允许取消并等待下一次机会，不要无脑追价。
-- 止损和平风险退出可以使用市价，因为控制风险优先于手续费。
-- 小账户手续费占比高，所以交易必须有足够空间。
-- 不要频繁做 1m 噪音交易。
-- 一笔交易至少要有明确 thesis、失效条件和目标区间。
-
-## 复盘要求
-
-每次复盘要直接回答：
-
-- 这笔交易为什么开？
-- 当时是否应该反向做？
-- 是方向错、入场错、止损错，还是持仓时间错？
-- 如果多拿 15 / 60 / 180 分钟会怎样？
-- 下次同类结构应如何处理？
-
-复盘结论必须反哺下一轮决策，不要重复同类错误。
-
-## 风控边界
-
-AI 是主决策者，但执行仍由 Python Supervisor 检查：
-
-- 必须有 stop_loss。
-- 必须有 take_profit 或目标区间。
-- 必须有 invalid_if。
-- 必须记录日志。
-- 不允许绕过 Python 风控。
-- 不允许直接裸调 Binance raw API。
-
-这些是系统安全边界，不是让 AI 放弃决策的理由。
-
-## 当前实现文件
+## 主要文件
 
 - 主程序：`scripts/pi_trading_supervisor.py`
-- 运行日志：`logs/pi_supervisor*.jsonl`
+- Pi 交易提示词：`prompts/pi_trading_system.md`
 - 最新状态：`state/pi_supervisor_state.json`
-- Pi 持久会话：`state/pi_sessions/`
-- 设计说明：`docs/pi-supervisor.md`
+- Pi 会话：`state/pi_sessions/`
+- 事件日志：`logs/pi_supervisor_*.jsonl`
+- 运行文档：`docs/pi-supervisor.md`
 - 交易日志：`docs/trade-log.md`
+
+## 修改代码时的原则
+
+- 不要让 AI 获得未受限的交易所权限。
+- 风控必须在 Python 层强制执行，不能只靠提示词。
+- live 下单必须记录日志。
+- 开仓必须有 stop_loss、take_profit、invalid_if。
+- 保护单更新必须先确认新止损有效，不能先撤掉最后一个有效止损。
+- 账户/挂单读取不可信时不能清理保护单或执行新开仓。
+- 只能有一个 live 执行进程持有 `state/live_execution.lock`。
+- 新增执行能力时，要同时更新风控、日志和文档。
+- 改动 `scripts/pi_trading_supervisor.py` 后必须运行：
+
+```bash
+python3 -m py_compile scripts/pi_trading_supervisor.py
+python3 -m unittest discover -s tests -v
+```
+
+## 数据源备注
+
+- DefiLlama API：`docs/api-sources.md`
+- duckduckgo_search：<https://raw.githubusercontent.com/deedy5/ddgs/refs/heads/main/README.md>
+- Binance Futures：<https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info>
+- Fred：<https://raw.githubusercontent.com/mortada/fredapi/refs/heads/master/README.md>
+- Tavily：<https://docs.tavily.com/llms.txt>
+- NewsAPI：<https://newsapi.org/docs>
+
+## RSS
+
+- CoinDesk：<https://www.coindesk.com/arc/outboundfeeds/rss/>
+- CoinTelegraph：<https://cointelegraph.com/rss>
+- WSJ Business：<https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml>
+- FT 中文：<http://www.ftchinese.com/rss/feed>
