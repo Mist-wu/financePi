@@ -13,7 +13,10 @@ import time
 from pathlib import Path
 from urllib.parse import urlencode
 
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,8 +45,14 @@ if not API_KEY or not PRIVATE_KEY_PATH.exists():
 with open(PRIVATE_KEY_PATH, "rb") as f:
     private_key = serialization.load_pem_private_key(f.read(), password=None)
 
-def sign_message(message):
-    signature = private_key.sign(message.encode())
+def sign_message(message: str) -> str:
+    data = message.encode()
+    if isinstance(private_key, Ed25519PrivateKey):
+        signature = private_key.sign(data)
+    elif isinstance(private_key, RSAPrivateKey):
+        signature = private_key.sign(data, padding.PKCS1v15(), hashes.SHA256())
+    else:
+        raise RuntimeError("Unsupported private key type for Binance API signing")
     return base64.b64encode(signature).decode()
 
 def get_timestamp():
