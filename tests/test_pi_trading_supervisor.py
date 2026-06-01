@@ -486,5 +486,18 @@ class TestCycleState(unittest.TestCase):
         sup.execute.assert_not_called()
 
 
+class TestNewsCollectorHelpers(unittest.TestCase):
+    def test_dedupe_news_items_keeps_distinct_errors(self):
+        items = [
+            {"source": "coindesk", "error": "HTTP Error 308"},
+            {"source": "binance_announcements", "error": "HTTP Error 400"},
+            {"source": "coindesk", "title": "A", "link": "https://a"},
+            {"source": "coindesk", "title": "A", "link": "https://a"},
+        ]
+        out = supervisor.dedupe_news_items(items)
+        self.assertEqual(len(out), 3)
+        self.assertEqual({i.get("source") for i in out if "error" in i}, {"coindesk", "binance_announcements"})
+
+
 if __name__ == "__main__":
     unittest.main()

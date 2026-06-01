@@ -47,8 +47,14 @@ EXECUTION_LOCK_PATH = STATE_DIR / "live_execution.lock"
 BINANCE_BASE = "https://fapi.binance.com"
 DEFAULT_MODEL = os.environ.get("PI_TRADING_MODEL", "openai-codex/gpt-5.5")
 
+BINANCE_CMS_URL = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=20"
+BINANCE_CMS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "clienttype": "web",
+}
+
 RSS_FEEDS = [
-    ("coindesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+    ("coindesk", "https://www.coindesk.com/arc/outboundfeeds/rss"),
     ("cointelegraph", "https://cointelegraph.com/rss"),
     ("decrypt", "https://decrypt.co/feed"),
     ("bitcoin_magazine", "https://bitcoinmagazine.com/.rss/full/"),
@@ -194,6 +200,33 @@ def rsi(closes: list[float], period: int = 14) -> float:
         return 100.0
     rs = ag / al
     return 100 - 100 / (1 + rs)
+
+
+def dedupe_news_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = set()
+    deduped = []
+    for item in items:
+        if "error" in item:
+            key = ("error", item.get("source"), item.get("error"))
+        else:
+            key = (item.get("title"), item.get("link"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def fetch_binance_cms_json(timeout: int = 8) -> dict[str, Any]:
+    """Fetch Binance announcement CMS payload via curl (Python urllib is TLS-blocked)."""
+    cmd = ["curl", "-sS", "--fail", BINANCE_CMS_URL]
+    for key, value in BINANCE_CMS_HEADERS.items():
+        cmd.extend(["-H", f"{key}: {value}"])
+    out = subprocess.check_output(cmd, timeout=timeout, stderr=subprocess.STDOUT)
+    payload = json.loads(out.decode())
+    if payload.get("code") not in {None, "000000"} or not payload.get("success", True):
+        raise RuntimeError(f"Binance CMS error: {payload}")
+    return payload
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -743,12 +776,7 @@ class NewsCollector:
         # Binance announcements: listings, futures launches, delistings, maintenance.
         # This is Binance's public web CMS endpoint, not the signed trading API.
         try:
-            req = urllib.request.Request(
-                "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=30",
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            with urllib.request.urlopen(req, timeout=5) as r:
-                payload = json.loads(r.read().decode())
+            payload = fetch_binance_cms_json(timeout=8)
             for cat in (payload.get("data") or {}).get("catalogs", [])[:8]:
                 catalog = cat.get("catalogName", "Binance Announcements")
                 for a in cat.get("articles", [])[:8]:
@@ -824,16 +852,7 @@ class NewsCollector:
             except Exception as e:
                 items.append({"source": "tavily", "error": str(e)})
 
-        # De-duplicate by title/link.
-        seen = set()
-        deduped = []
-        for item in items:
-            key = (item.get("title"), item.get("link"))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(item)
-        self.cache = deduped[:180]
+        self.cache = dedupe_news_items(items)[:180]
         self.last_fetch = time.time()
         return self.cache
 
